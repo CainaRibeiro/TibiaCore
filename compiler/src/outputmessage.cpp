@@ -31,10 +31,60 @@ const std::chrono::milliseconds OUTPUTMESSAGE_AUTOSEND_DELAY {10};
 
 class OutputMessageAllocator
 {
-	public:
-		typedef OutputMessage value_type;
-		template<typename U>
-		struct rebind {typedef LockfreePoolingAllocator<U, OUTPUTMESSAGE_FREE_LIST_CAPACITY> other;};
+public:
+    typedef OutputMessage value_type;
+    
+    OutputMessageAllocator() = default;
+    
+    template<typename U>
+    constexpr OutputMessageAllocator(const OutputMessageAllocator&) noexcept {}
+    
+    template<typename U>
+    struct rebind {
+        typedef typename std::conditional<
+            std::is_same<U, OutputMessage>::value,
+            OutputMessageAllocator,
+            LockfreePoolingAllocator<U, OUTPUTMESSAGE_FREE_LIST_CAPACITY>
+        >::type other;
+    };
+    
+    OutputMessage* allocate(size_t n) const {
+        if (n != 1) {
+            throw std::bad_alloc();
+        }
+        
+        OutputMessage* p;
+        if (!getFreeList().pop(p)) {
+            p = static_cast<OutputMessage*>(operator new(sizeof(OutputMessage)));
+        }
+        return p;
+    }
+    
+    void deallocate(OutputMessage* p, size_t n) const {
+        if (n != 1 || !p) {
+            return;
+        }
+        
+        if (!getFreeList().bounded_push(p)) {
+            operator delete(p);
+        }
+    }
+    
+    bool operator==(const OutputMessageAllocator&) const noexcept {
+        return true;
+    }
+    
+    bool operator!=(const OutputMessageAllocator&) const noexcept {
+        return false;
+    }
+
+private:
+    typedef boost::lockfree::stack<OutputMessage*, boost::lockfree::capacity<OUTPUTMESSAGE_FREE_LIST_CAPACITY>> FreeList;
+    
+    static FreeList& getFreeList() {
+        static FreeList freeList;
+        return freeList;
+    }
 };
 
 void OutputMessagePool::scheduleSendAll()
